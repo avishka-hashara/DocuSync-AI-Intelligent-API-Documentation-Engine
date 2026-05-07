@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 import urllib.request
@@ -10,11 +11,20 @@ load_dotenv()
 
 app = FastAPI(title="DocuSync AI API")
 
+# --- NEW: CORS Configuration ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], # Allow Next.js frontend
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"], # Allow all headers
+)
+# -------------------------------
+
 # Connect to our local Qdrant container
 client = QdrantClient(url="http://localhost:6333")
 COLLECTION_NAME = "codebase_docs"
 
-# Define the data format we expect from the frontend
 class ChatRequest(BaseModel):
     question: str
 
@@ -70,23 +80,19 @@ def read_root():
 @app.post("/api/v1/chat")
 def chat_with_codebase(request: ChatRequest):
     try:
-        # 1. Convert the user's text question into a mathematical vector
         question_vector = get_embedding(request.question)
         
-        # 2. Search Qdrant for the 3 most relevant code chunks (UPDATED API)
         search_response = client.query_points(
             collection_name=COLLECTION_NAME,
             query=question_vector,
             limit=3
         )
         
-        # Safely extract the points from the response
         search_results = getattr(search_response, "points", search_response)
         
         if not search_results:
             return {"answer": "I don't have enough context in the database to answer that.", "sources": []}
         
-        # 3. Stitch the retrieved code chunks together into a single string
         context = ""
         sources = []
         for hit in search_results:
@@ -95,7 +101,6 @@ def chat_with_codebase(request: ChatRequest):
             context += f"{payload['code']}\n\n"
             sources.append({"name": payload['name'], "file": payload['filepath']})
             
-        # 4. Ask the LLM to read the context and answer the question
         answer = ask_llm(context, request.question)
         
         return {
