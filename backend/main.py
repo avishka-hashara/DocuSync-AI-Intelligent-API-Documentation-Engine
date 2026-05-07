@@ -107,9 +107,9 @@ async def create_project(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/chat")
-def chat_with_codebase(request: ChatRequest):
+async def chat_with_codebase(request: ChatRequest):
     try:
-        question_vector = ingest.get_embedding(request.question)
+        question_vector = await ingest.get_embedding(request.question)
         
         search_response = client.query_points(
             collection_name=COLLECTION_NAME,
