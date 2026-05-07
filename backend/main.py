@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel # <-- FIXED: Added this import
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from database import get_db
 import models
 import ingest 
+from ws_manager import manager
 
 load_dotenv()
 
@@ -40,6 +41,16 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 class ChatRequest(BaseModel):
     question: str
     project_id: int
+
+@app.websocket("/ws/progress/{project_id}")
+async def websocket_endpoint(websocket: WebSocket, project_id: int):
+    await manager.connect(websocket, project_id)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, project_id)
 
 @app.get("/")
 def read_root():

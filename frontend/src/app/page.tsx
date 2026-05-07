@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload } from 'lucide-react';
+import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload, CheckCircle2, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -18,6 +18,14 @@ interface Project {
   name: string;
 }
 
+interface ProgressUpdate {
+  status: 'extracting' | 'processing' | 'completed' | 'failed';
+  message: string;
+  total?: number;
+  current?: number;
+  file?: string;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'ai', content: 'Hello! Upload a ZIP file of your Python codebase to start chatting.' }
@@ -31,6 +39,10 @@ export default function Home() {
   const [newProjectName, setNewProjectName] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+
+  // WebSocket Progress State
+  const [progress, setProgress] = useState<ProgressUpdate | null>(null);
+  const [showProgress, setShowProgress] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -47,6 +59,25 @@ export default function Home() {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
+  const connectWebSocket = (projectId: number) => {
+    const ws = new WebSocket(`ws://localhost:8000/ws/progress/${projectId}`);
+    setShowProgress(true);
+
+    ws.onmessage = (event) => {
+      const data: ProgressUpdate = JSON.parse(event.data);
+      setProgress(data);
+      if (data.status === 'completed' || data.status === 'failed') {
+        setTimeout(() => setShowProgress(false), 5000); // Hide after 5s
+        ws.close();
+      }
+    };
+
+    ws.onerror = () => {
+      setProgress({ status: 'failed', message: 'WebSocket connection error.' });
+      setTimeout(() => setShowProgress(false), 5000);
+    };
+  };
+
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile || !newProjectName) return;
@@ -59,15 +90,23 @@ export default function Home() {
     try {
       const res = await fetch('http://localhost:8000/api/v1/projects', {
         method: 'POST',
-        body: formData, // Browser sets boundary automatically for FormData
+        body: formData,
       });
 
       if (res.ok) {
+        const data = await res.json();
+        const projectId = data.project.id;
+        
         await fetchProjects();
         setIsModalOpen(false);
         setNewProjectName('');
         setSelectedFile(null);
-        setMessages([{ role: 'ai', content: `Project "${newProjectName}" uploaded! Give me a few seconds to parse it.` }]);
+        setSelectedProjectId(projectId);
+        
+        // Start listening for progress
+        connectWebSocket(projectId);
+        
+        setMessages(prev => [...prev, { role: 'ai', content: `Project "${newProjectName}" uploaded! Monitoring ingestion...` }]);
       }
     } catch (err) {
       alert("Upload failed.");
@@ -102,6 +141,41 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#0A0A0B] text-gray-200 font-sans relative">
+      {/* Progress Overlay */}
+      {showProgress && progress && (
+        <div className="fixed top-20 right-6 z-50 animate-in fade-in slide-in-from-right-4 duration-300">
+          <div className="bg-[#141415] border border-gray-800 rounded-xl p-4 shadow-2xl w-80">
+            <div className="flex items-start gap-3">
+              {progress.status === 'completed' ? (
+                <CheckCircle2 className="text-green-500 shrink-0" size={20} />
+              ) : progress.status === 'failed' ? (
+                <AlertCircle className="text-red-500 shrink-0" size={20} />
+              ) : (
+                <Loader2 className="text-blue-500 animate-spin shrink-0" size={20} />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{progress.message}</p>
+                {progress.total && progress.current !== undefined && (
+                  <div className="mt-3">
+                    <div className="flex justify-between text-[10px] text-gray-500 mb-1">
+                      <span>{progress.current} / {progress.total} files</span>
+                      <span>{Math.round((progress.current / progress.total) * 100)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-blue-600 transition-all duration-300 ease-out" 
+                        style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {progress.file && <p className="mt-2 text-[10px] text-gray-500 truncate italic">Current: {progress.file}</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="border-b border-gray-800 bg-[#0A0A0B] p-4 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Terminal className="text-blue-500" size={24} />
