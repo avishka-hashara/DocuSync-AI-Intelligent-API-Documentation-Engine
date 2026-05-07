@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2 } from 'lucide-react';
+import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -20,7 +20,7 @@ interface Project {
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'ai', content: 'Hello! I am DocuSync AI. Create or select a project to start chatting with your code.' }
+    { role: 'ai', content: 'Hello! Upload a ZIP file of your Python codebase to start chatting.' }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -29,46 +29,48 @@ export default function Home() {
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectPath, setNewProjectPath] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  // Using useCallback to prevent linting dependency warnings
   const fetchProjects = useCallback(async () => {
     try {
       const res = await fetch('http://localhost:8000/api/v1/projects');
       const data = await res.json();
-      setProjects(data);
-      if (data.length > 0 && !selectedProjectId) {
-        setSelectedProjectId(data[0].id);
+      if (Array.isArray(data)) {
+        setProjects(data);
+        if (data.length > 0 && !selectedProjectId) setSelectedProjectId(data[0].id);
       }
     } catch (err) {
-      console.error("Failed to fetch projects", err);
+      console.error(err);
     }
   }, [selectedProjectId]);
 
-  useEffect(() => {
-    fetchProjects();
-  }, [fetchProjects]);
+  useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedFile || !newProjectName) return;
+
     setIsCreating(true);
+    const formData = new FormData();
+    formData.append('name', newProjectName);
+    formData.append('file', selectedFile);
+
     try {
       const res = await fetch('http://localhost:8000/api/v1/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newProjectName, path: newProjectPath }),
+        body: formData, // Browser sets boundary automatically for FormData
       });
+
       if (res.ok) {
         await fetchProjects();
         setIsModalOpen(false);
         setNewProjectName('');
-        setNewProjectPath('');
-        setMessages([{ role: 'ai', content: `Project "${newProjectName}" created! Ingestion is running.` }]);
+        setSelectedFile(null);
+        setMessages([{ role: 'ai', content: `Project "${newProjectName}" uploaded! Give me a few seconds to parse it.` }]);
       }
     } catch (err) {
-      console.error(err);
-      alert("Failed to create project");
+      alert("Upload failed.");
     } finally {
       setIsCreating(false);
     }
@@ -78,25 +80,21 @@ export default function Home() {
     e.preventDefault();
     if (!input.trim() || isLoading || !selectedProjectId) return;
 
-    const userMessage: Message = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMessage]);
+    const userMsg: Message = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/chat', {
+      const res = await fetch('http://localhost:8000/api/v1/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: userMessage.content,
-          project_id: selectedProjectId
-        }),
+        body: JSON.stringify({ question: userMsg.content, project_id: selectedProjectId }),
       });
-      const data = await response.json();
-      setMessages((prev) => [...prev, { role: 'ai', content: data.answer, sources: data.sources }]);
+      const data = await res.json();
+      setMessages(prev => [...prev, { role: 'ai', content: data.answer, sources: data.sources }]);
     } catch (err) {
-      console.error(err);
-      setMessages((prev) => [...prev, { role: 'ai', content: 'Error connecting to API.' }]);
+      setMessages(prev => [...prev, { role: 'ai', content: 'Connection Error.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -118,15 +116,10 @@ export default function Home() {
               value={selectedProjectId || ''}
               onChange={(e) => setSelectedProjectId(Number(e.target.value))}
             >
-              {projects.map(proj => (
-                <option key={proj.id} value={proj.id}>{proj.name}</option>
-              ))}
+              {projects.map(proj => <option key={proj.id} value={proj.id} className="bg-[#141415]">{proj.name}</option>)}
             </select>
           </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="p-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 rounded-lg border border-blue-600/20 transition-all"
-          >
+          <button onClick={() => setIsModalOpen(true)} className="p-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 rounded-lg border border-blue-600/20 transition-all">
             <Plus size={20} />
           </button>
         </div>
@@ -143,34 +136,32 @@ export default function Home() {
             <div className={`max-w-[85%] rounded-2xl p-5 ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : 'bg-[#141415] border border-gray-800 text-gray-300 rounded-tl-sm shadow-sm'}`}>
               <div className={msg.role === 'ai' ? 'prose prose-invert max-w-none prose-sm' : 'whitespace-pre-wrap text-sm'}>
                 {msg.role === 'ai' ? (
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code(props) {
-                        const { children, className, ...rest } = props;
-                        const match = /language-(\w+)/.exec(className || '');
-                        return match ? (
-                          <SyntaxHighlighter
-                            {...rest}
-                            style={vscDarkPlus}
-                            PreTag="div"
-                            language={match[1]}
-                          >
-                            {String(children).replace(/\n$/, '')}
-                          </SyntaxHighlighter>
-                        ) : (
-                          <code {...rest} className="bg-gray-800 px-1.5 py-0.5 rounded-md text-blue-300">{children}</code>
-                        );
-                      }
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                    code(props) {
+                      const { children, className, ...rest } = props;
+                      const match = /language-(\w+)/.exec(className || '');
+                      return match ? (
+                        <SyntaxHighlighter {...rest} style={vscDarkPlus} PreTag="div" language={match[1]}>{String(children).replace(/\n$/, '')}</SyntaxHighlighter>
+                      ) : (
+                        <code {...rest} className="bg-gray-800 px-1.5 py-0.5 rounded-md text-blue-300">{children}</code>
+                      );
+                    }
+                  }}>{msg.content}</ReactMarkdown>
                 ) : msg.content}
               </div>
+              {msg.sources && msg.sources.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-gray-800 flex flex-wrap gap-2">
+                  {msg.sources.map((s, i) => (
+                    <span key={i} className="px-2 py-0.5 rounded-md bg-gray-900 border border-gray-700 text-[10px] text-gray-500 flex items-center gap-1">
+                      <FileCode2 size={10} /> {s.file}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ))}
+        {isLoading && <div className="text-gray-500 animate-pulse flex items-center gap-2"><Bot size={18} /> Searching codebase...</div>}
       </div>
 
       <div className="p-4 bg-[#0A0A0B] border-t border-gray-800">
@@ -178,7 +169,7 @@ export default function Home() {
           <input
             type="text" value={input} onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about your code..."
-            className="w-full bg-[#141415] border border-gray-700 text-white rounded-xl px-5 py-4 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full bg-[#141415] border border-gray-700 text-white rounded-xl px-5 py-4 outline-none focus:ring-1 focus:ring-blue-500"
             disabled={isLoading || !selectedProjectId}
           />
           <button type="submit" disabled={isLoading || !input.trim()} className="absolute right-2 p-2 bg-blue-600 text-white rounded-lg"><Send size={18} /></button>
@@ -188,11 +179,21 @@ export default function Home() {
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#141415] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-            <h2 className="text-xl font-bold text-white mb-6">Ingest New Codebase</h2>
-            <form onSubmit={handleCreateProject} className="space-y-4">
-              <input required value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="Project Name" className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none" />
-              <input required value={newProjectPath} onChange={(e) => setNewProjectPath(e.target.value)} placeholder="E:\Projects\my-app" className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none" />
-              <button type="submit" disabled={isCreating} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold text-white">Upload New Codebase</h2>
+              <button onClick={() => setIsModalOpen(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
+            </div>
+            <form onSubmit={handleCreateProject} className="space-y-6">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">Project Name</label>
+                <input required value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
+              </div>
+              <div className="border-2 border-dashed border-gray-800 rounded-xl p-8 flex flex-col items-center justify-center gap-3 hover:border-blue-500/50 transition-all cursor-pointer relative">
+                <Upload className="text-gray-600" size={32} />
+                <p className="text-sm text-gray-400">{selectedFile ? selectedFile.name : "Select a .zip file"}</p>
+                <input type="file" accept=".zip" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer" />
+              </div>
+              <button type="submit" disabled={isCreating || !selectedFile} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2 font-semibold">
                 {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Start Ingestion'}
               </button>
             </form>

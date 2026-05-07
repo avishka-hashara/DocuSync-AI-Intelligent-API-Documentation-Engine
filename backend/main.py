@@ -1,14 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
+import os
+import shutil
+import uuid
 import urllib.request
 import json
-import os
 from dotenv import load_dotenv
 
+# Local imports
 from database import get_db
 import models
 import ingest 
@@ -17,10 +19,10 @@ load_dotenv()
 
 app = FastAPI(title="DocuSync AI API")
 
-# --- BROAD CORS FOR DOCKER ---
+# Broad CORS for the Docker network
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,42 +32,65 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 client = QdrantClient(url=QDRANT_URL)
 COLLECTION_NAME = "codebase_docs"
 
+# Sandbox for processing ZIP files
+UPLOAD_DIR = "/app/temp_uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 class ChatRequest(BaseModel):
     question: str
     project_id: int
-
-class ProjectCreate(BaseModel):
-    name: str
-    path: str 
 
 @app.get("/")
 def read_root():
     return {"status": "DocuSync API is running"}
 
-@app.post("/api/v1/projects")
-def create_project(project: ProjectCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    try:
-        new_project = models.Project(name=project.name, owner_id=1)
-        db.add(new_project)
-        db.commit()
-        db.refresh(new_project)
-        background_tasks.add_task(ingest.ingest_directory, project.path, new_project.id)
-        return {"project": new_project, "message": "Ingestion started"}
-    except Exception as e:
-        db.rollback()
-        print(f"Error creating project: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/v1/projects")
 def get_projects(db: Session = Depends(get_db)):
     try:
-        projects = db.query(models.Project).filter(models.Project.owner_id == 1).all()
-        # Ensure we return an empty list instead of None if no projects found
-        return projects if projects else []
-    except Exception as e:
-        print(f"Database Fetch Error: {e}")
-        # Returning an empty list on error prevents the frontend .map() crash
+        return db.query(models.Project).filter(models.Project.owner_id == 1).all()
+    except Exception:
         return []
+
+@app.post("/api/v1/projects")
+async def create_project(
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Please upload a .zip file.")
+
+    try:
+        # 1. Ensure Dummy User exists
+        user = db.query(models.User).filter(models.User.id == 1).first()
+        if not user:
+            user = models.User(email="founder@docusync.ai")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        # 2. Create Project in DB
+        new_project = models.Project(name=name, owner_id=user.id)
+        db.add(new_project)
+        db.commit()
+        db.refresh(new_project)
+
+        # 3. Save ZIP temporarily
+        project_uuid = str(uuid.uuid4())
+        zip_path = os.path.join(UPLOAD_DIR, f"{project_uuid}.zip")
+        extract_path = os.path.join(UPLOAD_DIR, project_uuid)
+
+        with open(zip_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # 4. Trigger Ingestion in Background
+        background_tasks.add_task(ingest.ingest_zip_archive, zip_path, extract_path, new_project.id)
+        
+        return {"project": new_project, "status": "Ingestion started"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/chat")
 def chat_with_codebase(request: ChatRequest):
@@ -99,7 +124,7 @@ def chat_with_codebase(request: ChatRequest):
             "Content-Type": "application/json"
         }
         
-        prompt = f"Use the context below to answer: {request.question}\n\nCONTEXT:\n{context}"
+        prompt = f"Using this code context, answer the question: {request.question}\n\nCONTEXT:\n{context}"
 
         data = json.dumps({
             "model": "openrouter/free",
@@ -109,10 +134,6 @@ def chat_with_codebase(request: ChatRequest):
         req = urllib.request.Request(url, data=data, headers=headers)
         with urllib.request.urlopen(req) as response:
             res = json.loads(response.read().decode())
-            return {
-                "answer": res['choices'][0]['message']['content'],
-                "sources": sources
-            }
+            return {"answer": res['choices'][0]['message']['content'], "sources": sources}
     except Exception as e:
-        print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
