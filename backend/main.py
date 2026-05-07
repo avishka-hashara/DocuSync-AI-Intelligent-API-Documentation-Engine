@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel # <-- FIXED: Added this import
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -47,7 +48,8 @@ def read_root():
 @app.get("/api/v1/projects")
 def get_projects(db: Session = Depends(get_db)):
     try:
-        return db.query(models.Project).filter(models.Project.owner_id == 1).all()
+        projects = db.query(models.Project).filter(models.Project.owner_id == 1).all()
+        return projects if projects else []
     except Exception:
         return []
 
@@ -62,7 +64,7 @@ async def create_project(
         raise HTTPException(status_code=400, detail="Please upload a .zip file.")
 
     try:
-        # 1. Ensure Dummy User exists
+        # Ensure Dummy User exists
         user = db.query(models.User).filter(models.User.id == 1).first()
         if not user:
             user = models.User(email="founder@docusync.ai")
@@ -70,13 +72,13 @@ async def create_project(
             db.commit()
             db.refresh(user)
 
-        # 2. Create Project in DB
+        # Create Project in DB
         new_project = models.Project(name=name, owner_id=user.id)
         db.add(new_project)
         db.commit()
         db.refresh(new_project)
 
-        # 3. Save ZIP temporarily
+        # Save ZIP temporarily
         project_uuid = str(uuid.uuid4())
         zip_path = os.path.join(UPLOAD_DIR, f"{project_uuid}.zip")
         extract_path = os.path.join(UPLOAD_DIR, project_uuid)
@@ -84,12 +86,13 @@ async def create_project(
         with open(zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 4. Trigger Ingestion in Background
+        # Trigger Ingestion in Background
         background_tasks.add_task(ingest.ingest_zip_archive, zip_path, extract_path, new_project.id)
         
         return {"project": new_project, "status": "Ingestion started"}
     except Exception as e:
         db.rollback()
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/chat")
@@ -136,4 +139,5 @@ def chat_with_codebase(request: ChatRequest):
             res = json.loads(response.read().decode())
             return {"answer": res['choices'][0]['message']['content'], "sources": sources}
     except Exception as e:
+        print(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

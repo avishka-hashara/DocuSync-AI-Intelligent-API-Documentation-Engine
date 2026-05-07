@@ -54,7 +54,7 @@ def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
                                     "name": chunk['name'],
                                     "type": chunk['type'],
                                     "code": chunk['code'],
-                                    "filepath": file # Store filename only for privacy
+                                    "filepath": file
                                 }
                             ))
                     except:
@@ -65,7 +65,7 @@ def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
             print(f"Project {project_id} fully ingested.")
 
     finally:
-        # 3. PRODUCTION CLEANUP: Remove temp files
+        # 3. Clean up
         if os.path.exists(zip_path):
             os.remove(zip_path)
         if os.path.exists(extract_path):
