@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Send, Terminal, User, Bot, FileCode2, FolderGit2, Plus, X, Loader2 } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -27,13 +27,13 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
 
-  // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectPath, setNewProjectPath] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
-  const fetchProjects = async () => {
+  // Using useCallback to prevent linting dependency warnings
+  const fetchProjects = useCallback(async () => {
     try {
       const res = await fetch('http://localhost:8000/api/v1/projects');
       const data = await res.json();
@@ -41,14 +41,14 @@ export default function Home() {
       if (data.length > 0 && !selectedProjectId) {
         setSelectedProjectId(data[0].id);
       }
-    } catch (error) {
-      console.error("Failed to fetch projects", error);
+    } catch (err) {
+      console.error("Failed to fetch projects", err);
     }
-  };
+  }, [selectedProjectId]);
 
   useEffect(() => {
     fetchProjects();
-  }, []);
+  }, [fetchProjects]);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,9 +64,10 @@ export default function Home() {
         setIsModalOpen(false);
         setNewProjectName('');
         setNewProjectPath('');
-        setMessages([{ role: 'ai', content: `Project "${newProjectName}" created! Ingestion is running in the background. You can start asking questions shortly.` }]);
+        setMessages([{ role: 'ai', content: `Project "${newProjectName}" created! Ingestion is running.` }]);
       }
-    } catch (error) {
+    } catch (err) {
+      console.error(err);
       alert("Failed to create project");
     } finally {
       setIsCreating(false);
@@ -93,7 +94,8 @@ export default function Home() {
       });
       const data = await response.json();
       setMessages((prev) => [...prev, { role: 'ai', content: data.answer, sources: data.sources }]);
-    } catch (error) {
+    } catch (err) {
+      console.error(err);
       setMessages((prev) => [...prev, { role: 'ai', content: 'Error connecting to API.' }]);
     } finally {
       setIsLoading(false);
@@ -102,8 +104,6 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#0A0A0B] text-gray-200 font-sans relative">
-
-      {/* Header */}
       <header className="border-b border-gray-800 bg-[#0A0A0B] p-4 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Terminal className="text-blue-500" size={24} />
@@ -132,7 +132,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 max-w-4xl mx-auto w-full">
         {messages.map((msg, index) => (
           <div key={index} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -143,34 +142,37 @@ export default function Home() {
             )}
             <div className={`max-w-[85%] rounded-2xl p-5 ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : 'bg-[#141415] border border-gray-800 text-gray-300 rounded-tl-sm shadow-sm'}`}>
               <div className={msg.role === 'ai' ? 'prose prose-invert max-w-none prose-sm' : 'whitespace-pre-wrap text-sm'}>
-                {msg.role === 'ai' ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                  code(props) {
-                    const { children, className, ...rest } = props;
-                    const match = /language-(\w+)/.exec(className || '');
-                    return match ? (
-                      <SyntaxHighlighter {...rest} PreTag="div" children={String(children).replace(/\n$/, '')} language={match[1]} style={vscDarkPlus} />
-                    ) : (
-                      <code {...rest} className="bg-gray-800 px-1.5 py-0.5 rounded-md text-blue-300">{children}</code>
-                    );
-                  }
-                }}>{msg.content}</ReactMarkdown> : msg.content}
+                {msg.role === 'ai' ? (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code(props) {
+                        const { children, className, ...rest } = props;
+                        const match = /language-(\w+)/.exec(className || '');
+                        return match ? (
+                          <SyntaxHighlighter
+                            {...rest}
+                            style={vscDarkPlus}
+                            PreTag="div"
+                            language={match[1]}
+                          >
+                            {String(children).replace(/\n$/, '')}
+                          </SyntaxHighlighter>
+                        ) : (
+                          <code {...rest} className="bg-gray-800 px-1.5 py-0.5 rounded-md text-blue-300">{children}</code>
+                        );
+                      }
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
+                ) : msg.content}
               </div>
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="mt-5 pt-4 border-t border-gray-800 flex flex-wrap gap-2">
-                  {msg.sources.map((src, i) => (
-                    <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-900 border border-gray-700 text-[10px] text-gray-400">
-                      <FileCode2 size={10} className="text-blue-500" /> {src.name}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         ))}
-        {isLoading && <div className="flex gap-4 items-center text-gray-500 text-sm animate-pulse"><Bot size={18} /> Thinking...</div>}
       </div>
 
-      {/* Input */}
       <div className="p-4 bg-[#0A0A0B] border-t border-gray-800">
         <form onSubmit={sendMessage} className="max-w-4xl mx-auto relative flex items-center">
           <input
@@ -183,37 +185,15 @@ export default function Home() {
         </form>
       </div>
 
-      {/* New Project Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#141415] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-white">Ingest New Codebase</h2>
-              <button onClick={() => setIsModalOpen(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
-            </div>
+            <h2 className="text-xl font-bold text-white mb-6">Ingest New Codebase</h2>
             <form onSubmit={handleCreateProject} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">Project Name</label>
-                <input
-                  required value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)}
-                  placeholder="e.g. My Python API"
-                  className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-blue-500 outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">Local Directory Path</label>
-                <input
-                  required value={newProjectPath} onChange={(e) => setNewProjectPath(e.target.value)}
-                  placeholder="E:\Projects\my-app"
-                  className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-blue-500 outline-none"
-                />
-              </div>
-              <button
-                type="submit" disabled={isCreating}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 transition-all"
-              >
-                {isCreating ? <Loader2 className="animate-spin" size={20} /> : <Plus size={20} />}
-                {isCreating ? 'Ingesting...' : 'Start Ingestion'}
+              <input required value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="Project Name" className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none" />
+              <input required value={newProjectPath} onChange={(e) => setNewProjectPath(e.target.value)} placeholder="E:\Projects\my-app" className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none" />
+              <button type="submit" disabled={isCreating} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2">
+                {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Start Ingestion'}
               </button>
             </form>
           </div>
