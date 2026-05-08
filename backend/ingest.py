@@ -207,7 +207,7 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
         if os.path.exists(extract_path):
             shutil.rmtree(extract_path)
 
-async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int):
+async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, github_access_token: str = None):
     db = SessionLocal()
     try:
         # 1. Update status to cloning
@@ -219,8 +219,14 @@ async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int):
         await manager.broadcast({"status": "cloning", "message": "Cloning repository..."}, project_id)
 
         # 2. Clone repository
-        logger.info(f"Cloning {repo_url} to {clone_path}")
-        git.Repo.clone_from(repo_url, clone_path)
+        logger.info(f"Cloning repository {repo_url} to {clone_path}")
+        
+        if github_access_token:
+            # Inject token into URL for authentication
+            auth_url = repo_url.replace("https://", f"https://{github_access_token}@")
+            git.Repo.clone_from(auth_url, clone_path)
+        else:
+            git.Repo.clone_from(repo_url, clone_path)
 
         # 3. Update status to ingesting
         if project:

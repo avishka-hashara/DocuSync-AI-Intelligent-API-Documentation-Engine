@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload, CheckCircle2, AlertCircle, Github, LogOut, Search, GitBranch, RotateCcw } from 'lucide-react';
+import { useSession, signIn, signOut } from 'next-auth/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -17,6 +18,7 @@ interface Project {
   id: number;
   name: string;
   status: 'pending' | 'cloning' | 'ingesting' | 'completed' | 'failed';
+  statusMessage?: string;
 }
 
 interface ProgressUpdate {
@@ -27,9 +29,20 @@ interface ProgressUpdate {
   file?: string;
 }
 
+interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  html_url: string;
+  description: string;
+}
+
 export default function Home() {
+  const { data: session, status: authStatus } = useSession();
+  const [userId, setUserId] = useState<number | null>(null);
+  
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'ai', content: 'Hello! Upload a ZIP file of your Python codebase to start chatting.' }
+    { role: 'ai', content: 'Hello! Sign in with GitHub to start indexing your repositories.' }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -41,13 +54,19 @@ export default function Home() {
   const [repoUrl, setRepoUrl] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
+  // GitHub Repos state
+  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
+  const [isFetchingRepos, setIsFetchingRepos] = useState(false);
+  const [repoSearch, setRepoSearch] = useState('');
+
   // WebSocket Progress State
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
   const [showProgress, setShowProgress] = useState(false);
 
   const fetchProjects = useCallback(async () => {
+    if (!userId) return;
     try {
-      const res = await fetch('http://localhost:8000/api/v1/projects');
+      const res = await fetch(`http://localhost:8000/api/v1/projects?user_id=${userId}`);
       const data = await res.json();
       if (Array.isArray(data)) {
         setProjects(data);
@@ -56,19 +75,77 @@ export default function Home() {
     } catch (err) {
       console.error(err);
     }
-  }, [selectedProjectId]);
-
-  useEffect(() => { fetchProjects(); }, [fetchProjects]);
+  }, [selectedProjectId, userId]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      const hasProcessingProject = projects.some(p => !['completed', 'failed'].includes(p.status));
-      if (hasProcessingProject) {
-        fetchProjects();
+    const syncUser = async () => {
+      if (session?.user && (session as any).githubId) {
+        try {
+          const res = await fetch('http://localhost:8000/api/v1/auth/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: session.user.email || '',
+              github_id: (session as any).githubId,
+              username: (session as any).username || '',
+              avatar_url: (session as any).avatarUrl || '',
+              access_token: (session as any).accessToken || ''
+            })
+          });
+          const data = await res.json();
+          setUserId(data.user_id);
+        } catch (err) {
+          console.error("Auth sync failed", err);
+        }
       }
-    }, 4000);
+    };
+    syncUser();
+  }, [session]);
+
+  useEffect(() => { if (userId) fetchProjects(); }, [fetchProjects, userId]);
+
+  const fetchGitHubRepos = async () => {
+    if (!userId) return;
+    setIsFetchingRepos(true);
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/github/repos?user_id=${userId}`);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setGithubRepos(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch GitHub repos", err);
+    } finally {
+      setIsFetchingRepos(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isModalOpen && userId && githubRepos.length === 0) {
+      fetchGitHubRepos();
+    }
+  }, [isModalOpen, userId]);
+
+  useEffect(() => {
+    const fetchStatus = async (projectId: number) => {
+      try {
+        const res = await fetch(`http://localhost:8000/api/v1/projects/${projectId}/status`);
+        const data = await res.json();
+        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, status: data.status, statusMessage: data.message } : p));
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const interval = setInterval(() => {
+      const processingProjects = projects.filter(p => !['completed', 'failed'].includes(p.status));
+      if (processingProjects.length > 0) {
+        processingProjects.forEach(p => fetchStatus(p.id));
+      }
+    }, projects.some(p => !['completed', 'failed'].includes(p.status)) ? 2000 : 4000);
+    
     return () => clearInterval(interval);
-  }, [projects, fetchProjects]);
+  }, [projects]);
 
   const connectWebSocket = (projectId: number) => {
     const ws = new WebSocket(`ws://localhost:8000/ws/progress/${projectId}`);
@@ -97,6 +174,7 @@ export default function Home() {
     const formData = new FormData();
     formData.append('name', newProjectName);
     formData.append('repo_url', repoUrl);
+    formData.append('user_id', String(userId));
 
     try {
       const res = await fetch('http://localhost:8000/api/v1/projects/sync', {
@@ -193,28 +271,64 @@ export default function Home() {
           <h1 className="text-xl font-semibold tracking-tight text-white">DocuSync AI</h1>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex flex-col items-end">
-            <div className="flex items-center gap-2 bg-[#141415] border border-gray-800 rounded-lg px-3 py-1.5">
-              <FolderGit2 size={16} className="text-gray-400" />
-              <select
-                className="bg-transparent text-sm text-gray-200 focus:outline-none cursor-pointer"
-                value={selectedProjectId || ''}
-                onChange={(e) => setSelectedProjectId(Number(e.target.value))}
-              >
-                {projects.map(proj => <option key={proj.id} value={proj.id} className="bg-[#141415]">{proj.name}</option>)}
-              </select>
+        <div className="flex items-center gap-4">
+          {session?.user && (
+            <div className="flex items-center gap-3 pr-4 border-r border-gray-800">
+              <img src={(session as any).avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full border border-gray-700" />
+              <div className="hidden sm:block text-right">
+                <p className="text-xs font-semibold text-white">{(session as any).username}</p>
+                <p className="text-[10px] text-gray-500">{session.user.email}</p>
+              </div>
+              <button onClick={() => signOut()} className="p-2 text-gray-500 hover:text-red-400 transition-colors">
+                <LogOut size={16} />
+              </button>
             </div>
-            {projects.find(p => p.id === selectedProjectId)?.status && !['completed', 'failed'].includes(projects.find(p => p.id === selectedProjectId)?.status || '') && (
-              <span className="text-[10px] text-blue-500 animate-pulse mt-1 font-medium flex items-center gap-1">
-                <Loader2 size={10} className="animate-spin" />
-                {projects.find(p => p.id === selectedProjectId)?.status.toUpperCase()}
-              </span>
-            )}
+          )}
+
+          {!session && (
+            <button 
+              onClick={() => signIn('github')}
+              className="flex items-center gap-2 bg-white text-black px-4 py-1.5 rounded-lg font-semibold text-sm hover:bg-gray-200 transition-all"
+            >
+              <Github size={18} /> Sign in
+            </button>
+          )}
+
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => fetchProjects()} 
+              className="p-2 text-gray-500 hover:text-white transition-colors"
+              title="Refresh Projects"
+            >
+              <RotateCcw size={18} />
+            </button>
+            <div className="flex flex-col items-end">
+              <div className="flex items-center gap-2 bg-[#141415] border border-gray-800 rounded-lg px-3 py-1.5">
+                <FolderGit2 size={16} className="text-gray-400" />
+                <select
+                  className="bg-transparent text-sm text-gray-200 focus:outline-none cursor-pointer"
+                  value={selectedProjectId || ''}
+                  onChange={(e) => setSelectedProjectId(Number(e.target.value))}
+                >
+                  {projects.length === 0 && <option value="">No projects</option>}
+                  {projects.map(proj => <option key={proj.id} value={proj.id} className="bg-[#141415]">{proj.name}</option>)}
+                </select>
+              </div>
+              {projects.find(p => p.id === selectedProjectId)?.status && !['completed', 'failed'].includes(projects.find(p => p.id === selectedProjectId)?.status || '') && (
+                <span className="text-[10px] text-blue-500 animate-pulse mt-1 font-medium flex items-center gap-1">
+                  <Loader2 size={10} className="animate-spin" />
+                  {projects.find(p => p.id === selectedProjectId)?.statusMessage || projects.find(p => p.id === selectedProjectId)?.status.toUpperCase()}
+                </span>
+              )}
+            </div>
+            <button 
+              onClick={() => setIsModalOpen(true)} 
+              disabled={!session}
+              className="p-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 rounded-lg border border-blue-600/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Plus size={20} />
+            </button>
           </div>
-          <button onClick={() => setIsModalOpen(true)} className="p-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 rounded-lg border border-blue-600/20 transition-all">
-            <Plus size={20} />
-          </button>
         </div>
       </header>
 
@@ -259,7 +373,7 @@ export default function Home() {
           <div className="bg-blue-600/5 border border-blue-600/20 rounded-xl p-6 text-center animate-pulse">
             <Loader2 className="mx-auto text-blue-500 animate-spin mb-3" size={32} />
             <h3 className="text-white font-medium mb-1">
-              {projects.find(p => p.id === selectedProjectId)?.status === 'failed' ? 'Ingestion Failed' : 'Project is being prepared'}
+              {projects.find(p => p.id === selectedProjectId)?.status === 'failed' ? 'Ingestion Failed' : (projects.find(p => p.id === selectedProjectId)?.statusMessage || 'Project is being prepared')}
             </h3>
             <p className="text-sm text-gray-500">
               {projects.find(p => p.id === selectedProjectId)?.status === 'failed' 
@@ -284,24 +398,84 @@ export default function Home() {
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#141415] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+          <div className="bg-[#141415] border border-gray-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl flex flex-col max-h-[90vh]">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold text-white">Sync GitHub Repository</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
             </div>
-            <form onSubmit={handleCreateProject} className="space-y-6">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">Project Name</label>
-                <input required placeholder="e.g. My Awesome Project" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
+            
+            <div className="flex-1 overflow-hidden flex flex-col gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">Project Name</label>
+                  <input 
+                    required 
+                    placeholder="e.g. My Awesome Project" 
+                    value={newProjectName} 
+                    onChange={(e) => setNewProjectName(e.target.value)} 
+                    className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" 
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">Direct URL (Optional)</label>
+                  <input 
+                    type="url" 
+                    placeholder="https://github.com/user/repo" 
+                    value={repoUrl} 
+                    onChange={(e) => setRepoUrl(e.target.value)} 
+                    className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" 
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">GitHub Repository URL</label>
-                <input required type="url" placeholder="https://github.com/user/repo" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
+
+              <div className="flex-1 flex flex-col min-h-0 border border-gray-800 rounded-xl overflow-hidden bg-[#0A0A0B]">
+                <div className="p-3 border-b border-gray-800 bg-[#141415] flex items-center gap-3">
+                  <Search size={16} className="text-gray-500" />
+                  <input 
+                    placeholder="Search your repositories..." 
+                    value={repoSearch}
+                    onChange={(e) => setRepoSearch(e.target.value)}
+                    className="bg-transparent text-sm text-white outline-none flex-1"
+                  />
+                  {isFetchingRepos && <Loader2 size={16} className="animate-spin text-blue-500" />}
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+                  {githubRepos
+                    .filter(r => r.full_name.toLowerCase().includes(repoSearch.toLowerCase()))
+                    .map(repo => (
+                    <button
+                      key={repo.id}
+                      onClick={() => {
+                        setRepoUrl(repo.html_url);
+                        if (!newProjectName) setNewProjectName(repo.name);
+                      }}
+                      className={`w-full text-left p-3 rounded-lg transition-all flex items-center justify-between group ${repoUrl === repo.html_url ? 'bg-blue-600/20 border border-blue-600/50' : 'hover:bg-[#141415] border border-transparent'}`}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{repo.full_name}</p>
+                        <p className="text-xs text-gray-500 truncate">{repo.description || 'No description'}</p>
+                      </div>
+                      <GitBranch size={14} className={`${repoUrl === repo.html_url ? 'text-blue-500' : 'text-gray-700 group-hover:text-gray-500'}`} />
+                    </button>
+                  ))}
+                  {githubRepos.length === 0 && !isFetchingRepos && (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-600 py-10">
+                      <Github size={40} className="mb-3 opacity-20" />
+                      <p className="text-sm">No repositories found.</p>
+                    </div>
+                  )}
+                </div>
               </div>
-              <button type="submit" disabled={isCreating || !repoUrl || !newProjectName} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2 font-semibold">
-                {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Sync Repository'}
+
+              <button 
+                onClick={handleCreateProject}
+                disabled={isCreating || !repoUrl || !newProjectName} 
+                className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2 font-semibold hover:bg-blue-500 transition-all disabled:opacity-50 disabled:bg-gray-800"
+              >
+                {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Sync & Index Repository'}
               </button>
-            </form>
+            </div>
           </div>
         </div>
       )}
