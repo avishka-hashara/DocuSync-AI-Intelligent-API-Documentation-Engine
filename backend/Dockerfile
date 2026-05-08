@@ -8,7 +8,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# Create directory for cloned repositories
+RUN mkdir -p /app/cloned_repos && chmod 777 /app/cloned_repos
 
 # 4. Copy the requirements file and install Python packages
 COPY requirements.txt .
