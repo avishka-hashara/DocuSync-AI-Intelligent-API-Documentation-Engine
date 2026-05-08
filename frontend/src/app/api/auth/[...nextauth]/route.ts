@@ -14,7 +14,7 @@ const handler = NextAuth({
       if (account) {
         token.accessToken = account.access_token;
         token.githubId = profile?.id?.toString() || (profile as any)?.sub;
-        token.username = (profile as any)?.login;
+        token.name = (profile as any)?.login;
         token.avatarUrl = (profile as any)?.avatar_url;
       }
       return token;
@@ -22,7 +22,7 @@ const handler = NextAuth({
     async session({ session, token }: any) {
       session.accessToken = token.accessToken;
       session.githubId = token.githubId;
-      session.username = token.username;
+      session.name = token.name;
       session.avatarUrl = token.avatarUrl;
       return session;
     },

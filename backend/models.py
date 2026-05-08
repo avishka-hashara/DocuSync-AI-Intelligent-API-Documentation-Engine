@@ -9,7 +9,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=True)
     github_id = Column(String, unique=True, index=True, nullable=True)
-    username = Column(String, nullable=True)
+    name = Column(String, nullable=True)
     avatar_url = Column(String, nullable=True)
     github_access_token = Column(String, nullable=True) # Storing temporarily to fetch repos
     created_at = Column(DateTime(timezone=True), server_default=func.now())

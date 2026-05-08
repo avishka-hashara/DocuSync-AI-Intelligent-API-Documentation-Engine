@@ -1,12 +1,28 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload, CheckCircle2, AlertCircle, Github, LogOut, Search, GitBranch, RotateCcw } from 'lucide-react';
+import { Send, Terminal, Bot, FileCode2, FolderGit2, Plus, X, Loader2, Upload, CheckCircle2, AlertCircle, LogOut, Search, GitBranch, RotateCcw } from 'lucide-react';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+const GithubIcon = ({ size = 20, className = "" }: { size?: number; className?: string }) => (
+  <svg 
+    viewBox="0 0 24 24" 
+    width={size} 
+    height={size} 
+    className={className}
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
+  </svg>
+);
 
 interface Message {
   role: 'user' | 'ai';
@@ -290,7 +306,7 @@ export default function Home() {
               onClick={() => signIn('github')}
               className="flex items-center gap-2 bg-white text-black px-4 py-1.5 rounded-lg font-semibold text-sm hover:bg-gray-200 transition-all"
             >
-              <Github size={18} /> Sign in
+              <GithubIcon size={18} /> Sign in
             </button>
           )}
 
@@ -461,7 +477,7 @@ export default function Home() {
                   ))}
                   {githubRepos.length === 0 && !isFetchingRepos && (
                     <div className="h-full flex flex-col items-center justify-center text-gray-600 py-10">
-                      <Github size={40} className="mb-3 opacity-20" />
+                      <GithubIcon size={40} className="mb-3 opacity-20" />
                       <p className="text-sm">No repositories found.</p>
                     </div>
                   )}

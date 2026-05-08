@@ -45,7 +45,7 @@ class ChatRequest(BaseModel):
 class AuthSyncRequest(BaseModel):
     email: str
     github_id: str
-    username: str
+    name: str
     avatar_url: str
     access_token: str
 
@@ -98,7 +98,7 @@ async def sync_auth_user(request: AuthSyncRequest, db: Session = Depends(get_db)
             user = models.User(
                 email=request.email,
                 github_id=request.github_id,
-                username=request.username,
+                name=request.name,
                 avatar_url=request.avatar_url,
                 github_access_token=request.access_token
             )
@@ -106,11 +106,11 @@ async def sync_auth_user(request: AuthSyncRequest, db: Session = Depends(get_db)
         else:
             user.github_access_token = request.access_token
             user.avatar_url = request.avatar_url
-            user.username = request.username
+            user.name = request.name
         
         db.commit()
         db.refresh(user)
-        return {"user_id": user.id, "username": user.username}
+        return {"user_id": user.id, "name": user.name}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
