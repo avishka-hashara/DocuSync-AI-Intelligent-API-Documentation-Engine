@@ -9,6 +9,7 @@ import shutil
 import uuid
 import urllib.request
 import json
+import httpx
 from dotenv import load_dotenv
 
 # Local imports
