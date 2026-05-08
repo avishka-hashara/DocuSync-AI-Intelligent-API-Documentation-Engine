@@ -36,9 +36,17 @@ async def get_embedding(text):
     }
     
     async with httpx.AsyncClient() as httpx_client:
-        response = await httpx_client.post(url, headers=headers, json=data, timeout=60.0)
-        res = response.json()
-        return res['data'][0]['embedding']
+        try:
+            response = await httpx_client.post(url, headers=headers, json=data, timeout=60.0)
+            response.raise_for_status()
+            res = response.json()
+            if 'data' not in res:
+                logger.error(f"OpenRouter Embedding Error: {res}")
+                raise Exception(f"Embedding API error: {res.get('error', 'Unknown error')}")
+            return res['data'][0]['embedding']
+        except Exception as e:
+            logger.error(f"Embedding request failed: {e}")
+            raise
 
 def generic_code_chunker(filepath):
     """
@@ -210,6 +218,9 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
 async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, github_access_token: str = None):
     db = SessionLocal()
     try:
+        # Give the frontend a moment to connect its WebSocket
+        await asyncio.sleep(2)
+        
         # 1. Update status to cloning
         project = db.query(models.Project).filter(models.Project.id == project_id).first()
         if project:
@@ -242,20 +253,33 @@ async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, gith
                 vectors_config=VectorParams(size=2048, distance=Distance.COSINE)
             )
 
-        # 5. Walk and process .py files
+        # 5. Walk and process supported files
         files_to_process = []
         for root, dirs, files in os.walk(clone_path):
             if any(x in root for x in [".git", "venv", "node_modules", "__pycache__"]):
                 continue
             for file in files:
-                if file.endswith(".py"):
+                ext = os.path.splitext(file)[1].lower()
+                if ext in SUPPORTED_EXTENSIONS:
                     files_to_process.append(os.path.join(root, file))
 
         total_files = len(files_to_process)
+        logger.info(f"Found {total_files} supported files in {clone_path}")
+        
+        if total_files == 0:
+            logger.warning(f"No supported files found in {clone_path}")
+            await manager.broadcast({"status": "failed", "message": "No supported code files found in this repository."}, project_id)
+            if project:
+                project.status = "failed"
+                db.commit()
+            return
+
         points_to_insert = []
 
         for i, filepath in enumerate(files_to_process):
             filename = os.path.basename(filepath)
+            ext = os.path.splitext(filename)[1].lower()
+            
             await manager.broadcast({
                 "status": "ingesting",
                 "message": f"Processing {filename}...",
@@ -264,7 +288,11 @@ async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, gith
             }, project_id)
 
             try:
-                chunks = extract_code_chunks(filepath)
+                if ext == ".py":
+                    chunks = extract_code_chunks(filepath)
+                else:
+                    chunks = generic_code_chunker(filepath)
+                
                 for chunk in chunks:
                     vector = await get_embedding(chunk['code'])
                     points_to_insert.append(PointStruct(
@@ -276,7 +304,7 @@ async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, gith
                             "type": chunk.get('type', 'Code'),
                             "code": chunk['code'],
                             "filepath": filename,
-                            "language": "python"
+                            "language": ext[1:]
                         }
                     ))
             except Exception as e:

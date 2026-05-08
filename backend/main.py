@@ -14,7 +14,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # Local imports
-from database import get_db
+from database import get_db, engine
 import models
 import ingest 
 from ws_manager import manager
@@ -24,7 +24,7 @@ load_dotenv()
 app = FastAPI(title="DocuSync AI API")
 
 # Create tables on startup
-models.Base.metadata.create_all(bind=ingest.database.engine)
+models.Base.metadata.create_all(bind=engine)
 
 # Broad CORS for the Docker network
 app.add_middleware(
