@@ -84,7 +84,7 @@ async def create_project(
             db.refresh(user)
 
         # Create Project in DB
-        new_project = models.Project(name=name, owner_id=user.id)
+        new_project = models.Project(name=name, owner_id=user.id, status="pending")
         db.add(new_project)
         db.commit()
         db.refresh(new_project)
@@ -101,6 +101,41 @@ async def create_project(
         background_tasks.add_task(ingest.ingest_zip_archive, zip_path, extract_path, new_project.id)
         
         return {"project": new_project, "status": "Ingestion started"}
+    except Exception as e:
+        db.rollback()
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/projects/sync")
+async def sync_github_repo(
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),
+    repo_url: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Ensure Dummy User exists
+        user = db.query(models.User).filter(models.User.id == 1).first()
+        if not user:
+            user = models.User(email="founder@docusync.ai")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        # Create Project in DB
+        new_project = models.Project(name=name, owner_id=user.id, status="pending")
+        db.add(new_project)
+        db.commit()
+        db.refresh(new_project)
+
+        # Generate unique path for cloning
+        project_uuid = str(uuid.uuid4())
+        clone_path = os.path.join("/app/cloned_repos", project_uuid)
+
+        # Trigger Ingestion in Background
+        background_tasks.add_task(ingest.clone_and_ingest, repo_url, clone_path, new_project.id)
+        
+        return {"project": new_project, "status": "Sync started"}
     except Exception as e:
         db.rollback()
         print(f"Error: {e}")

@@ -16,6 +16,7 @@ interface Message {
 interface Project {
   id: number;
   name: string;
+  status: 'pending' | 'cloning' | 'ingesting' | 'completed' | 'failed';
 }
 
 interface ProgressUpdate {
@@ -37,7 +38,7 @@ export default function Home() {
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [repoUrl, setRepoUrl] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
   // WebSocket Progress State
@@ -58,6 +59,16 @@ export default function Home() {
   }, [selectedProjectId]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const hasProcessingProject = projects.some(p => !['completed', 'failed'].includes(p.status));
+      if (hasProcessingProject) {
+        fetchProjects();
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [projects, fetchProjects]);
 
   const connectWebSocket = (projectId: number) => {
     const ws = new WebSocket(`ws://localhost:8000/ws/progress/${projectId}`);
@@ -80,15 +91,15 @@ export default function Home() {
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile || !newProjectName) return;
+    if (!repoUrl || !newProjectName) return;
 
     setIsCreating(true);
     const formData = new FormData();
     formData.append('name', newProjectName);
-    formData.append('file', selectedFile);
+    formData.append('repo_url', repoUrl);
 
     try {
-      const res = await fetch('http://localhost:8000/api/v1/projects', {
+      const res = await fetch('http://localhost:8000/api/v1/projects/sync', {
         method: 'POST',
         body: formData,
       });
@@ -100,16 +111,16 @@ export default function Home() {
         await fetchProjects();
         setIsModalOpen(false);
         setNewProjectName('');
-        setSelectedFile(null);
+        setRepoUrl('');
         setSelectedProjectId(projectId);
         
         // Start listening for progress
         connectWebSocket(projectId);
         
-        setMessages(prev => [...prev, { role: 'ai', content: `Project "${newProjectName}" uploaded! Monitoring ingestion...` }]);
+        setMessages(prev => [...prev, { role: 'ai', content: `Project "${newProjectName}" sync started! Monitoring progress...` }]);
       }
     } catch (err) {
-      alert("Upload failed.");
+      alert("Sync failed.");
     } finally {
       setIsCreating(false);
     }
@@ -183,15 +194,23 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-[#141415] border border-gray-800 rounded-lg px-3 py-1.5">
-            <FolderGit2 size={16} className="text-gray-400" />
-            <select
-              className="bg-transparent text-sm text-gray-200 focus:outline-none cursor-pointer"
-              value={selectedProjectId || ''}
-              onChange={(e) => setSelectedProjectId(Number(e.target.value))}
-            >
-              {projects.map(proj => <option key={proj.id} value={proj.id} className="bg-[#141415]">{proj.name}</option>)}
-            </select>
+          <div className="flex flex-col items-end">
+            <div className="flex items-center gap-2 bg-[#141415] border border-gray-800 rounded-lg px-3 py-1.5">
+              <FolderGit2 size={16} className="text-gray-400" />
+              <select
+                className="bg-transparent text-sm text-gray-200 focus:outline-none cursor-pointer"
+                value={selectedProjectId || ''}
+                onChange={(e) => setSelectedProjectId(Number(e.target.value))}
+              >
+                {projects.map(proj => <option key={proj.id} value={proj.id} className="bg-[#141415]">{proj.name}</option>)}
+              </select>
+            </div>
+            {projects.find(p => p.id === selectedProjectId)?.status && !['completed', 'failed'].includes(projects.find(p => p.id === selectedProjectId)?.status || '') && (
+              <span className="text-[10px] text-blue-500 animate-pulse mt-1 font-medium flex items-center gap-1">
+                <Loader2 size={10} className="animate-spin" />
+                {projects.find(p => p.id === selectedProjectId)?.status.toUpperCase()}
+              </span>
+            )}
           </div>
           <button onClick={() => setIsModalOpen(true)} className="p-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 rounded-lg border border-blue-600/20 transition-all">
             <Plus size={20} />
@@ -236,17 +255,30 @@ export default function Home() {
           </div>
         ))}
         {isLoading && <div className="text-gray-500 animate-pulse flex items-center gap-2"><Bot size={18} /> Searching codebase...</div>}
+        {selectedProjectId && projects.find(p => p.id === selectedProjectId)?.status !== 'completed' && (
+          <div className="bg-blue-600/5 border border-blue-600/20 rounded-xl p-6 text-center animate-pulse">
+            <Loader2 className="mx-auto text-blue-500 animate-spin mb-3" size={32} />
+            <h3 className="text-white font-medium mb-1">
+              {projects.find(p => p.id === selectedProjectId)?.status === 'failed' ? 'Ingestion Failed' : 'Project is being prepared'}
+            </h3>
+            <p className="text-sm text-gray-500">
+              {projects.find(p => p.id === selectedProjectId)?.status === 'failed' 
+                ? 'There was an error processing this repository.' 
+                : 'Please wait while we clone and index the codebase. This may take a few minutes.'}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="p-4 bg-[#0A0A0B] border-t border-gray-800">
         <form onSubmit={sendMessage} className="max-w-4xl mx-auto relative flex items-center">
           <input
             type="text" value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about your code..."
-            className="w-full bg-[#141415] border border-gray-700 text-white rounded-xl px-5 py-4 outline-none focus:ring-1 focus:ring-blue-500"
-            disabled={isLoading || !selectedProjectId}
+            placeholder={projects.find(p => p.id === selectedProjectId)?.status === 'completed' ? "Ask about your code..." : "Wait for ingestion to complete..."}
+            className="w-full bg-[#141415] border border-gray-700 text-white rounded-xl px-5 py-4 outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isLoading || !selectedProjectId || projects.find(p => p.id === selectedProjectId)?.status !== 'completed'}
           />
-          <button type="submit" disabled={isLoading || !input.trim()} className="absolute right-2 p-2 bg-blue-600 text-white rounded-lg"><Send size={18} /></button>
+          <button type="submit" disabled={isLoading || !input.trim() || projects.find(p => p.id === selectedProjectId)?.status !== 'completed'} className="absolute right-2 p-2 bg-blue-600 text-white rounded-lg disabled:bg-gray-800 disabled:text-gray-600"><Send size={18} /></button>
         </form>
       </div>
 
@@ -254,21 +286,20 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#141415] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-white">Upload New Codebase</h2>
+              <h2 className="text-xl font-bold text-white">Sync GitHub Repository</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
             </div>
             <form onSubmit={handleCreateProject} className="space-y-6">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">Project Name</label>
-                <input required value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
+                <input required placeholder="e.g. My Awesome Project" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
               </div>
-              <div className="border-2 border-dashed border-gray-800 rounded-xl p-8 flex flex-col items-center justify-center gap-3 hover:border-blue-500/50 transition-all cursor-pointer relative">
-                <Upload className="text-gray-600" size={32} />
-                <p className="text-sm text-gray-400">{selectedFile ? selectedFile.name : "Select a .zip file"}</p>
-                <input type="file" accept=".zip" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer" />
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-2 uppercase">GitHub Repository URL</label>
+                <input required type="url" placeholder="https://github.com/user/repo" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} className="w-full bg-[#0A0A0B] border border-gray-800 rounded-lg px-4 py-2.5 text-white outline-none focus:border-blue-500" />
               </div>
-              <button type="submit" disabled={isCreating || !selectedFile} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2 font-semibold">
-                {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Start Ingestion'}
+              <button type="submit" disabled={isCreating || !repoUrl || !newProjectName} className="w-full bg-blue-600 py-3 rounded-lg flex items-center justify-center gap-2 font-semibold">
+                {isCreating ? <Loader2 className="animate-spin" size={20} /> : 'Sync Repository'}
               </button>
             </form>
           </div>

@@ -7,10 +7,13 @@ import httpx
 import asyncio
 import logging
 import re
+import git
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from ast_parser import extract_code_chunks
 from ws_manager import manager
+from database import SessionLocal
+import models
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,6 +66,8 @@ def generic_code_chunker(filepath):
 
 async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
     logger.info(f"Starting ingestion for project {project_id}")
+    db = SessionLocal()
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
     
     # Give the frontend a moment to connect its WebSocket
     await asyncio.sleep(2)
@@ -81,6 +86,10 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
         return
 
     try:
+        if project:
+            project.status = "ingesting"
+            db.commit()
+
         logger.info(f"Broadcasting extraction status for project {project_id}")
         await manager.broadcast({"status": "extracting", "message": "Extracting codebase..."}, project_id)
         
@@ -159,6 +168,11 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
         if points_to_insert:
             logger.info(f"Upserting {len(points_to_insert)} points to Qdrant")
             client.upsert(collection_name=COLLECTION_NAME, points=points_to_insert)
+
+            if project:
+                project.status = "completed"
+                db.commit()
+
             await manager.broadcast({
                 "status": "completed", 
                 "message": "Ingestion complete! Codebase is ready.",
@@ -167,6 +181,9 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
             }, project_id)
             logger.info(f"Project {project_id} fully ingested.")
         else:
+            if project:
+                project.status = "failed"
+                db.commit()
             await manager.broadcast({
                 "status": "failed", 
                 "message": "Could not extract any code chunks from the files."
@@ -174,14 +191,115 @@ async def ingest_zip_archive(zip_path: str, extract_path: str, project_id: int):
 
     except Exception as e:
         logger.error(f"Ingestion error for project {project_id}: {e}")
+        if project:
+            project.status = "failed"
+            db.commit()
         await manager.broadcast({
             "status": "failed", 
             "message": f"An error occurred: {str(e)}"
         }, project_id)
 
     finally:
+        db.close()
         logger.info(f"Cleaning up paths for project {project_id}")
         if os.path.exists(zip_path):
             os.remove(zip_path)
         if os.path.exists(extract_path):
             shutil.rmtree(extract_path)
+
+async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int):
+    db = SessionLocal()
+    try:
+        # 1. Update status to cloning
+        project = db.query(models.Project).filter(models.Project.id == project_id).first()
+        if project:
+            project.status = "cloning"
+            db.commit()
+        
+        await manager.broadcast({"status": "cloning", "message": "Cloning repository..."}, project_id)
+
+        # 2. Clone repository
+        logger.info(f"Cloning {repo_url} to {clone_path}")
+        git.Repo.clone_from(repo_url, clone_path)
+
+        # 3. Update status to ingesting
+        if project:
+            project.status = "ingesting"
+            db.commit()
+        
+        await manager.broadcast({"status": "ingesting", "message": "Ingesting codebase..."}, project_id)
+
+        # 4. Ensure Qdrant collection exists
+        if not client.collection_exists(COLLECTION_NAME):
+            client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=2048, distance=Distance.COSINE)
+            )
+
+        # 5. Walk and process .py files
+        files_to_process = []
+        for root, dirs, files in os.walk(clone_path):
+            if any(x in root for x in [".git", "venv", "node_modules", "__pycache__"]):
+                continue
+            for file in files:
+                if file.endswith(".py"):
+                    files_to_process.append(os.path.join(root, file))
+
+        total_files = len(files_to_process)
+        points_to_insert = []
+
+        for i, filepath in enumerate(files_to_process):
+            filename = os.path.basename(filepath)
+            await manager.broadcast({
+                "status": "ingesting",
+                "message": f"Processing {filename}...",
+                "total": total_files,
+                "current": i + 1
+            }, project_id)
+
+            try:
+                chunks = extract_code_chunks(filepath)
+                for chunk in chunks:
+                    vector = await get_embedding(chunk['code'])
+                    points_to_insert.append(PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=vector,
+                        payload={
+                            "project_id": project_id,
+                            "name": chunk['name'],
+                            "type": chunk.get('type', 'Code'),
+                            "code": chunk['code'],
+                            "filepath": filename,
+                            "language": "python"
+                        }
+                    ))
+            except Exception as e:
+                logger.error(f"Error parsing {filename}: {e}")
+                continue
+
+        # 6. Upsert to Qdrant
+        if points_to_insert:
+            client.upsert(collection_name=COLLECTION_NAME, points=points_to_insert)
+
+            # 7. Final status update
+            if project:
+                project.status = "completed"
+                db.commit()
+            
+            await manager.broadcast({"status": "completed", "message": "Sync complete!"}, project_id)
+        else:
+            if project:
+                project.status = "failed"
+                db.commit()
+            await manager.broadcast({"status": "failed", "message": "No code chunks found to ingest."}, project_id)
+
+    except Exception as e:
+        logger.error(f"Clone/Ingest error: {e}")
+        if project:
+            project.status = "failed"
+            db.commit()
+        await manager.broadcast({"status": "failed", "message": str(e)}, project_id)
+    finally:
+        db.close()
+        if os.path.exists(clone_path):
+            shutil.rmtree(clone_path)
