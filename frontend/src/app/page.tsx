@@ -95,24 +95,33 @@ export default function Home() {
 
   useEffect(() => {
     const syncUser = async () => {
+      console.log("Session state:", session);
       if (session?.user && (session as any).githubId) {
+        const payload = {
+          email: session.user.email || '',
+          github_id: String((session as any).githubId),
+          name: (session as any).name || '',
+          avatar_url: (session as any).avatarUrl || '',
+          access_token: (session as any).accessToken || ''
+        };
+        console.log("Syncing with payload:", payload);
         try {
           const res = await fetch('http://localhost:8000/api/v1/auth/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: session.user.email || '',
-              github_id: (session as any).githubId,
-              username: (session as any).username || '',
-              avatar_url: (session as any).avatarUrl || '',
-              access_token: (session as any).accessToken || ''
-            })
+            body: JSON.stringify(payload)
           });
           const data = await res.json();
-          setUserId(data.user_id);
+          if (res.ok) {
+            setUserId(data.user_id);
+          } else {
+            console.error("Sync failed with status:", res.status, data);
+          }
         } catch (err) {
           console.error("Auth sync failed", err);
         }
+      } else if (session) {
+        console.warn("Session exists but githubId is missing", session);
       }
     };
     syncUser();

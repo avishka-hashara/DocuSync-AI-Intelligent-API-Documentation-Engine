@@ -10,6 +10,7 @@ import uuid
 import urllib.request
 import json
 import httpx
+from typing import Optional
 from dotenv import load_dotenv
 
 # Local imports
@@ -21,6 +22,9 @@ from ws_manager import manager
 load_dotenv()
 
 app = FastAPI(title="DocuSync AI API")
+
+# Create tables on startup
+models.Base.metadata.create_all(bind=ingest.database.engine)
 
 # Broad CORS for the Docker network
 app.add_middleware(
@@ -44,11 +48,11 @@ class ChatRequest(BaseModel):
     project_id: int
 
 class AuthSyncRequest(BaseModel):
-    email: str
+    email: Optional[str] = None
     github_id: str
-    name: str
-    avatar_url: str
-    access_token: str
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    access_token: Optional[str] = None
 
 @app.websocket("/ws/progress/{project_id}")
 async def websocket_endpoint(websocket: WebSocket, project_id: int):
@@ -93,6 +97,7 @@ async def get_project_status(project_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/auth/sync")
 async def sync_auth_user(request: AuthSyncRequest, db: Session = Depends(get_db)):
+    print(f"Syncing user: {request}")
     try:
         user = db.query(models.User).filter(models.User.github_id == request.github_id).first()
         if not user:
