@@ -280,7 +280,7 @@ async def clone_and_ingest(repo_url: str, clone_path: str, project_id: int, gith
             filename = os.path.basename(filepath)
             ext = os.path.splitext(filename)[1].lower()
             
-            await manager.broadcast({
+            await manager.broadcast({ 
                 "status": "ingesting",
                 "message": f"Processing {filename}...",
                 "total": total_files,
